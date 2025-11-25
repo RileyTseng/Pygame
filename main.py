@@ -26,6 +26,7 @@ PLAYER_COLOR = (255, 255, 0)
 EXIT_COLOR = (0, 255, 0)
 HIDDEN_COLOR = (0, 0, 0)  # ★遮蔽黑色
 TRAP_COLOR = (200, 0, 200)  # 新增：傳送陷阱顏色（紫色）
+MONSTER_COLOR = (255, 105, 180)  # 粉紅色：半夜放閃的情侶（定點）
 
 # ---------------------- 遊戲狀態 ----------------------
 maze = []
@@ -34,6 +35,10 @@ exit_pos = {'x': ROWS - 2, 'y': COLS - 2}
 glow_time = 0
 show_victory = False
 traps = set()  # 存放 (r,c) 的傳送陷阱位置
+monster = None  # store monster info or None. monster = {
+#   'cells': {(r1,c1),(r2,c2)}, 'triggered': False
+# }
+reveal_until = 0  # pygame.time.get_ticks() ms until which fog is removed
 
 level = 1
 visible_map = None  # 第二關用：走過的格子
@@ -95,6 +100,7 @@ def ensure_exit_reachable(maze):
 def generate_maze():
     global maze, player, show_victory
     global level, visible_map
+    global monster, reveal_until
 
     maze = generate_perfect_maze()
     add_extra_paths(maze)
@@ -114,6 +120,49 @@ def generate_maze():
         for pos in chosen:
             traps.add(pos)
 
+    # 在第二、三關可能放置 0~1 個「雙格怪物」；怪物佔兩個相鄰地面格，且不能放在起點、出口或陷阱位置
+    # reset reveal state and monster reference for new maze
+    monster = None
+    reveal_until = 0
+    if level in (2, 3):
+        if random.randint(0, 1) == 1:  # 0 或 1
+            # try a number of random attempts to find a valid 2-cell placement that doesn't block exit
+            attempts = 200
+            placed = False
+            for _ in range(attempts):
+                # pick a base floor cell
+                r = random.randint(1, ROWS-2)
+                c = random.randint(1, COLS-2)
+                if maze[r][c] != 0:
+                    continue
+                # choose an adjacent direction
+                dirs = [(1,0), (-1,0), (0,1), (0,-1)]
+                random.shuffle(dirs)
+                for dr, dc in dirs:
+                    r2, c2 = r+dr, c+dc
+                    if 0 <= r2 < ROWS and 0 <= c2 < COLS and maze[r2][c2] == 0:
+                        # ensure not overlapping with player start, exit, or traps
+                        if (r, c) == (player['x'], player['y']) or (r2, c2) == (player['x'], player['y']):
+                            continue
+                        if (r, c) == (exit_pos['x'], exit_pos['y']) or (r2, c2) == (exit_pos['x'], exit_pos['y']):
+                            continue
+                        if (r, c) in traps or (r2, c2) in traps:
+                            continue
+
+                        # Temporarily treat these two cells as walls and check reachability
+                        maze[r][c] = 1
+                        maze[r2][c2] = 1
+                        reachable = is_reachable(maze, 1, 1, exit_pos['x'], exit_pos['y'])
+                        # restore
+                        maze[r][c] = 0
+                        maze[r2][c2] = 0
+                        if reachable:
+                            monster = {'cells': {(r, c), (r2, c2)}, 'triggered': False}
+                            placed = True
+                            break
+                if placed:
+                    break
+
     # 關卡視野設定
     if level == 1:
         visible_map = None
@@ -126,9 +175,16 @@ def generate_maze():
 # ---------------------- 遊戲邏輯 ----------------------
 def move_player(dx, dy):
     global show_victory, level, visible_map
+    global reveal_until
 
     nx, ny = player['x'] + dx, player['y'] + dy
-    if 0 <= nx < ROWS and 0 <= ny < COLS and maze[nx][ny] == 0:
+    # 不能移動到牆或怪物占格
+    blocked_by_monster = False
+    if monster is not None:
+        if (nx, ny) in monster['cells']:
+            blocked_by_monster = True
+
+    if 0 <= nx < ROWS and 0 <= ny < COLS and maze[nx][ny] == 0 and not blocked_by_monster:
         player['x'], player['y'] = nx, ny
 
         # ★ 第2關：只記錄“走過”的格子
@@ -155,6 +211,9 @@ def move_player(dx, dy):
                             if maze[r][c] == 0 and (r, c) not in traps
                             and not (r == exit_pos['x'] and c == exit_pos['y'])
                             and not (r, c) == curr_pos]
+            # exclude monster cells
+            if monster is not None:
+                destinations = [d for d in destinations if d not in monster['cells']]
             if destinations:
                 dest_r, dest_c = random.choice(destinations)
                 # 明確設定整數格座標以確保角色仍在格子中心
@@ -166,6 +225,21 @@ def move_player(dx, dy):
             else:
                 # 沒有可傳送的合法位置：保留在原地，但已移除觸發陷阱
                 pass
+
+        # ★ 檢查是否接近（撞上）怪物的範圍（距離 ≤ 1）以觸發視野消失效果，如果怪物尚未被觸發
+        if monster is not None and not monster.get('triggered', False):
+            # player's current position
+            px, py = player['x'], player['y']
+            triggered = False
+            for (mr, mc) in monster['cells']:
+                # 僅在四向相鄰（不包含對角）才視為觸發
+                if abs(mr - px) + abs(mc - py) == 1:
+                    triggered = True
+                    break
+            if triggered:
+                monster['triggered'] = True
+                # 取消視野遮蔽：把 reveal_until 設為四秒以後
+                reveal_until = pygame.time.get_ticks() + 3000
 
 # ---------------------- 視野繪圖 ----------------------
 def draw_limited_view():
@@ -201,6 +275,9 @@ def draw_limited_view():
                 # 畫一個小方塊代表陷阱
                 inner = (rect[0]+CELL_SIZE//6, rect[1]+CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3)
                 pygame.draw.rect(screen, TRAP_COLOR, inner)
+            # 畫怪物（若該格屬於怪物且目前可見）
+            if monster is not None and (r, c) in monster['cells']:
+                pygame.draw.rect(screen, MONSTER_COLOR, rect)
 
 # ---------------------- 繪圖 ----------------------
 def draw_exit_glow():
@@ -214,8 +291,10 @@ def draw_exit_glow():
 
 def draw_game():
     screen.fill(BG_COLOR)
+    current_time = pygame.time.get_ticks()
+    reveal_active = current_time < reveal_until
 
-    if level == 1:
+    if level == 1 or reveal_active:
         # 完整視野
         for r in range(ROWS):
             for c in range(COLS):
@@ -226,6 +305,8 @@ def draw_game():
                     if (r, c) in traps:
                         inner = (c*CELL_SIZE + CELL_SIZE//6, r*CELL_SIZE + CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3)
                         pygame.draw.rect(screen, TRAP_COLOR, inner)
+                    if monster is not None and (r, c) in monster['cells']:
+                        pygame.draw.rect(screen, MONSTER_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
     else:
         draw_limited_view()
 
@@ -243,6 +324,7 @@ def draw_game():
 # ---------------------- 下一關迷宮生成 ----------------------
 def generate_maze_for_next_level():
     global maze, visible_map, show_victory
+    global monster, reveal_until
 
     maze = generate_perfect_maze()
     add_extra_paths(maze)
@@ -265,6 +347,42 @@ def generate_maze_for_next_level():
         visible_map[player['x']][player['y']] = True
     elif level == 3:
         visible_map = None
+
+    # 同樣在下一關嘗試放置 0~1 個怪物（第二、三關）
+    monster = None
+    reveal_until = 0
+    if level in (2, 3):
+        if random.randint(0, 1) == 1:
+            attempts = 200
+            placed = False
+            for _ in range(attempts):
+                r = random.randint(1, ROWS-2)
+                c = random.randint(1, COLS-2)
+                if maze[r][c] != 0:
+                    continue
+                dirs = [(1,0), (-1,0), (0,1), (0,-1)]
+                random.shuffle(dirs)
+                for dr, dc in dirs:
+                    r2, c2 = r+dr, c+dc
+                    if 0 <= r2 < ROWS and 0 <= c2 < COLS and maze[r2][c2] == 0:
+                        if (r, c) == (player['x'], player['y']) or (r2, c2) == (player['x'], player['y']):
+                            continue
+                        if (r, c) == (exit_pos['x'], exit_pos['y']) or (r2, c2) == (exit_pos['x'], exit_pos['y']):
+                            continue
+                        if (r, c) in traps or (r2, c2) in traps:
+                            continue
+
+                        maze[r][c] = 1
+                        maze[r2][c2] = 1
+                        reachable = is_reachable(maze, 1, 1, exit_pos['x'], exit_pos['y'])
+                        maze[r][c] = 0
+                        maze[r2][c2] = 0
+                        if reachable:
+                            monster = {'cells': {(r, c), (r2, c2)}, 'triggered': False}
+                            placed = True
+                            break
+                if placed:
+                    break
 
 # ---------------------- 主程式 ----------------------
 generate_maze()
