@@ -24,6 +24,7 @@ BG_COLOR = (0, 26, 51)
 WALL_COLOR = (255, 255, 255)
 PLAYER_COLOR = (255, 255, 0)
 EXIT_COLOR = (0, 255, 0)
+HIDDEN_COLOR = (0, 0, 0)  # ★遮蔽黑色
 
 # ---------------------- 遊戲狀態 ----------------------
 maze = []
@@ -32,9 +33,8 @@ exit_pos = {'x': ROWS - 2, 'y': COLS - 2}
 glow_time = 0
 show_victory = False
 
-# ★新增：關卡與視野資料
 level = 1
-visible_map = None
+visible_map = None  # 第二關用：走過的格子
 
 # ---------------------- 迷宮生成 ----------------------
 def generate_perfect_maze():
@@ -78,91 +78,87 @@ def ensure_exit_reachable(maze):
     exit_pos = {'x': ROWS-2, 'y': COLS-2}
     maze[exit_pos['x']][exit_pos['y']] = 0
     if not is_reachable(maze, 1,1, exit_pos['x'], exit_pos['y']):
-        currentX, currentY = exit_pos['x'], exit_pos['y']
-        while not is_reachable(maze, 1,1, currentX, currentY):
+        cx, cy = exit_pos['x'], exit_pos['y']
+        while not is_reachable(maze, 1,1, cx, cy):
             dirs = [(-1,0),(0,-1),(1,0),(0,1)]
             random.shuffle(dirs)
             for dx, dy in dirs:
-                nx, ny = currentX+dx, currentY+dy
+                nx, ny = cx+dx, cy+dy
                 if 0<nx<ROWS-1 and 0<ny<COLS-1:
                     maze[nx][ny] = 0
                     if is_reachable(maze,1,1,nx,ny):
-                        currentX, currentY = nx, ny
+                        cx, cy = nx, ny
                         break
 
 def generate_maze():
     global maze, player, show_victory
     global level, visible_map
 
-    def _generate(reset_player=True):
-        global maze, player, show_victory, visible_map
-        maze = generate_perfect_maze()
-        add_extra_paths(maze)
-        ensure_exit_reachable(maze)
-        if reset_player:
-            player = {'x':1, 'y':1}
-        show_victory = False
-        # ★ 視野設定（依關卡）
-        if level == 2:
-            visible_map = [[False]*COLS for _ in range(ROWS)]
-        elif level == 3:
-            visible_map = None
-    # 預設第一次呼叫重設玩家
-    _generate(reset_player=True)
+    maze = generate_perfect_maze()
+    add_extra_paths(maze)
+    ensure_exit_reachable(maze)
+    player = {'x':1, 'y':1}
+    show_victory = False
+
+    # 關卡視野設定
+    if level == 1:
+        visible_map = None
+    elif level == 2:
+        visible_map = [[False]*COLS for _ in range(ROWS)]
+        visible_map[player['x']][player['y']] = True
+    elif level == 3:
+        visible_map = None
 
 # ---------------------- 遊戲邏輯 ----------------------
 def move_player(dx, dy):
-    global show_victory, level
+    global show_victory, level, visible_map
 
     nx, ny = player['x'] + dx, player['y'] + dy
     if 0 <= nx < ROWS and 0 <= ny < COLS and maze[nx][ny] == 0:
         player['x'], player['y'] = nx, ny
 
+        # ★ 第2關：只記錄“走過”的格子
+        if level == 2:
+            visible_map[nx][ny] = True
+
+        # 過關
         if nx == exit_pos['x'] and ny == exit_pos['y']:
             show_victory = True
-            # 只觸發一次 USEREVENT，避免遊戲一直被重置
             pygame.time.set_timer(pygame.USEREVENT, 2000, loops=1)
 
-            # ★ 過關自動升級到下一關
             if level < 3:
                 level += 1
-                # 升級時不重設玩家位置
                 generate_maze_for_next_level()
 
 # ---------------------- 視野繪圖 ----------------------
 def draw_limited_view():
-    global visible_map
-
     radius = 2
     px, py = player['x'], player['y']
 
-    for r in range(px - radius, px + radius + 1):
-        for c in range(py - radius, py + radius + 1):
-            if 0 <= r < ROWS and 0 <= c < COLS:
+    for r in range(ROWS):
+        for c in range(COLS):
+            rect = (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE)
+            in_current_view = abs(r - px) <= radius and abs(c - py) <= radius
 
-                # 第2關：視野會被記錄
-                if level == 2 and visible_map is not None:
-                    visible_map[r][c] = True
+            if level == 2:
+                # ★顯示條件：走過 or 目前 5×5
+                if not visible_map[r][c] and not in_current_view:
+                    pygame.draw.rect(screen, HIDDEN_COLOR, rect)
+                    continue
 
-                # 第2關：沒看過的格子不畫
-                if level == 2:
-                    if visible_map is None or not visible_map[r][c]:
-                        continue
+            if level == 3:
+                if not in_current_view:
+                    pygame.draw.rect(screen, HIDDEN_COLOR, rect)
+                    continue
 
-                # 第3關：只畫當前 5×5
-                if level == 3:
-                    if abs(r - px) > radius or abs(c - py) > radius:
-                        continue
+            # 正常繪製
+            if maze[r][c] == 1:
+                pygame.draw.rect(screen, WALL_COLOR, rect)
+            else:
+                pygame.draw.rect(screen, BG_COLOR, rect)
 
-                rect = (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE)
-                if maze[r][c] == 1:
-                    pygame.draw.rect(screen, WALL_COLOR, rect)
-                else:
-                    pygame.draw.rect(screen, BG_COLOR, rect)
-
-                if r == exit_pos['x'] and c == exit_pos['y']:
-                    pygame.draw.rect(screen, EXIT_COLOR, rect)
-
+            if r == exit_pos['x'] and c == exit_pos['y']:
+                pygame.draw.rect(screen, EXIT_COLOR, rect)
 
 # ---------------------- 繪圖 ----------------------
 def draw_exit_glow():
@@ -177,15 +173,13 @@ def draw_exit_glow():
 def draw_game():
     screen.fill(BG_COLOR)
 
-    # ★依關卡決定視野
     if level == 1:
-        # 第1關：完整視野
+        # 完整視野
         for r in range(ROWS):
             for c in range(COLS):
-                if maze[r][c]==1:
+                if maze[r][c] == 1:
                     pygame.draw.rect(screen, WALL_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
     else:
-        # 第2、3關：小視野
         draw_limited_view()
 
     draw_exit_glow()
@@ -193,34 +187,28 @@ def draw_game():
     # 玩家
     pygame.draw.rect(screen, PLAYER_COLOR, (player['y']*CELL_SIZE, player['x']*CELL_SIZE, CELL_SIZE, CELL_SIZE))
 
-    # 勝利提示
     if show_victory:
         text = font.render("Victory!", True, (255,255,0))
         screen.blit(text, (WIDTH//2-100, HEIGHT//2-24))
 
     pygame.display.flip()
 
-
-# ---------------------- 主程式 ----------------------
+# ---------------------- 下一關迷宮生成 ----------------------
 def generate_maze_for_next_level():
-    # 只重設迷宮和視野，不重設玩家位置
-    global maze, show_victory, visible_map, player
+    global maze, visible_map, show_victory
+
     maze = generate_perfect_maze()
     add_extra_paths(maze)
     ensure_exit_reachable(maze)
     show_victory = False
+
     if level == 2:
-        # 保留玩家目前位置周圍的視野
-        radius = 2
-        if visible_map is None:
-            visible_map = [[False]*COLS for _ in range(ROWS)]
-        for r in range(player['x'] - radius, player['x'] + radius + 1):
-            for c in range(player['y'] - radius, player['y'] + radius + 1):
-                if 0 <= r < ROWS and 0 <= c < COLS:
-                    visible_map[r][c] = True
+        visible_map = [[False]*COLS for _ in range(ROWS)]
+        visible_map[player['x']][player['y']] = True
     elif level == 3:
         visible_map = None
 
+# ---------------------- 主程式 ----------------------
 generate_maze()
 
 running = True
@@ -250,5 +238,3 @@ while running:
     draw_game()
 
 pygame.quit()
-
-
