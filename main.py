@@ -17,7 +17,24 @@ pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Maze Game - 3 Levels")
 clock = pygame.time.Clock()
-font = pygame.font.SysFont(None, 48)
+# Pick a font that supports Chinese characters; prefer common Windows fonts then fall back to default.
+font_candidates = [
+    "Microsoft JhengHei", "Microsoft JhengHei UI", "SimHei", "SimSun",
+    "Arial Unicode MS", "NotoSansCJK-Regular"
+]
+font_path = None
+for name in font_candidates:
+    match = pygame.font.match_font(name)
+    if match:
+        font_path = match
+        break
+
+if font_path:
+    # Use a specific TTF path to ensure Chinese glyphs render
+    font = pygame.font.Font(font_path, 48)
+else:
+    # Fallback to the default system font
+    font = pygame.font.SysFont(None, 48)
 
 # ---------------------- 顏色 ----------------------
 BG_COLOR = (0, 26, 51)
@@ -27,6 +44,8 @@ EXIT_COLOR = (0, 255, 0)
 HIDDEN_COLOR = (0, 0, 0)  # ★遮蔽黑色
 TRAP_COLOR = (200, 0, 200)  # 新增：傳送陷阱顏色（紫色）
 MONSTER_COLOR = (255, 105, 180)  # 粉紅色：半夜放閃的情侶（定點）
+PUPPY_COLOR = (255, 200, 200)  # 心碎小狗顏色（淺粉）
+START_COLOR = (255, 165, 0)  # 起點方塊（橘色），可穿透
 
 # ---------------------- 遊戲狀態 ----------------------
 maze = []
@@ -39,6 +58,13 @@ monster = None  # store monster info or None. monster = {
 #   'cells': {(r1,c1),(r2,c2)}, 'triggered': False
 # }
 reveal_until = 0  # pygame.time.get_ticks() ms until which fog is removed
+puppy = None  # heartbroken puppy dict or None: {'pos':(r,c), 'activated':False, 'delivered':False}
+path_history = deque(maxlen=32)  # keep recent player positions for following behavior
+exit_attempts = 0  # attempts to step on exit while puppy active and undelivered
+show_message = False
+message_text = ""
+message_suppressed = False  # if True, the last_message_text was closed by the player (space) and shouldn't re-show
+last_message_text = None
 
 level = 1
 visible_map = None  # 第二關用：走過的格子
@@ -101,12 +127,18 @@ def generate_maze():
     global maze, player, show_victory
     global level, visible_map
     global monster, reveal_until
+    global puppy, path_history, exit_attempts, show_message, message_text, message_suppressed, last_message_text
 
     maze = generate_perfect_maze()
     add_extra_paths(maze)
     ensure_exit_reachable(maze)
     player = {'x':1, 'y':1}
     show_victory = False
+    # reset any message suppression when generating a new maze (allow messages again)
+    message_suppressed = False
+    last_message_text = None
+    # start path history with starting position
+    path_history.append((player['x'], player['y']))
 
     # ★ 在每張迷宮上隨機放置 3~7 個傳送陷阱，放在地面 (maze == 0) 上，且不能放在玩家起點或出口
     traps.clear()
@@ -171,11 +203,45 @@ def generate_maze():
         visible_map[player['x']][player['y']] = True
     elif level == 3:
         visible_map = None
+    # 第三關：必定生成 1 個心碎小狗（單格，不可穿過），放置時需保證出口可達
+    puppy = None
+    path_history.clear()
+    path_history.append((player['x'], player['y']))
+    exit_attempts = 0
+    show_message = False
+    message_text = ""
+    message_suppressed = False
+    last_message_text = None
+    message_suppressed = False
+    last_message_text = None
+    if level == 3:
+        # find a candidate floor tile not start/exit/traps/other monster and that doesn't block the path
+        attempts = 200
+        for _ in range(attempts):
+            r = random.randint(1, ROWS-2)
+            c = random.randint(1, COLS-2)
+            if maze[r][c] != 0:
+                continue
+            if (r, c) == (player['x'], player['y']) or (r, c) == (exit_pos['x'], exit_pos['y']):
+                continue
+            if (r, c) in traps:
+                continue
+            if monster is not None and (r, c) in monster['cells']:
+                continue
+
+            # temporarily mark puppy tile as wall to test reachability
+            maze[r][c] = 1
+            ok = is_reachable(maze, 1, 1, exit_pos['x'], exit_pos['y'])
+            maze[r][c] = 0
+            if ok:
+                puppy = {'pos': (r, c), 'activated': False, 'delivered': False}
+                break
 
 # ---------------------- 遊戲邏輯 ----------------------
 def move_player(dx, dy):
     global show_victory, level, visible_map
     global reveal_until
+    global puppy, path_history, exit_attempts, show_message, message_text, message_suppressed, last_message_text
 
     nx, ny = player['x'] + dx, player['y'] + dy
     # 不能移動到牆或怪物占格
@@ -184,21 +250,48 @@ def move_player(dx, dy):
         if (nx, ny) in monster['cells']:
             blocked_by_monster = True
 
-    if 0 <= nx < ROWS and 0 <= ny < COLS and maze[nx][ny] == 0 and not blocked_by_monster:
+    blocked_by_puppy = False
+    if puppy is not None and not puppy.get('activated', False):
+        if (nx, ny) == puppy.get('pos'):
+            blocked_by_puppy = True
+
+    if 0 <= nx < ROWS and 0 <= ny < COLS and maze[nx][ny] == 0 and not blocked_by_monster and not blocked_by_puppy:
         player['x'], player['y'] = nx, ny
 
         # ★ 第2關：只記錄“走過”的格子
         if level == 2:
             visible_map[nx][ny] = True
 
-        # 過關
-        if nx == exit_pos['x'] and ny == exit_pos['y']:
-            show_victory = True
-            pygame.time.set_timer(pygame.USEREVENT, 2000, loops=1)
+        # append path history for puppy following
+        path_history.append((player['x'], player['y']))
 
-            if level < 3:
-                level += 1
-                generate_maze_for_next_level()
+        # 過關判定：如果有被啟動但未被送走的心碎小狗，則不能過關
+        if nx == exit_pos['x'] and ny == exit_pos['y']:
+            # if puppy active and not delivered, block victory and show message
+            if level == 3 and puppy is not None and puppy.get('activated', False) and not puppy.get('delivered', False):
+                exit_attempts += 1
+                if exit_attempts > 3:
+                    new_msg = "你怎麼可以不送小狗回家?"
+                else:
+                    new_msg = "你是不是忘了要送誰回家"
+                # only show if user hasn't suppressed this exact message
+                if message_suppressed and last_message_text == new_msg:
+                    # do not re-show
+                    pass
+                else:
+                    message_text = new_msg
+                    show_message = True
+                    # reset suppression when showing a new/different message
+                    message_suppressed = False
+                    last_message_text = None
+                print(new_msg)
+            else:
+                show_victory = True
+                pygame.time.set_timer(pygame.USEREVENT, 2000, loops=1)
+
+                if level < 3:
+                    level += 1
+                    generate_maze_for_next_level()
 
         # ★ 處理傳送陷阱：如果踩到 trap，則立即傳送至地圖上另一個隨機非牆位置（排除出口與其他陷阱），並且移除該陷阱
         if (nx, ny) in traps:
@@ -239,7 +332,46 @@ def move_player(dx, dy):
             if triggered:
                 monster['triggered'] = True
                 # 取消視野遮蔽：把 reveal_until 設為四秒以後
-                reveal_until = pygame.time.get_ticks() + 3000
+                reveal_until = pygame.time.get_ticks() + 4000
+
+        # 心碎小狗：啟動 / 跟隨 / 送回家
+        if level == 3 and puppy is not None:
+            # activation when puppy is inside view (5x5 centered on player)
+            if not puppy.get('activated', False):
+                if abs(puppy['pos'][0] - player['x']) <= 2 and abs(puppy['pos'][1] - player['y']) <= 2:
+                    puppy['activated'] = True
+                    new_msg = "終於有人要送我回家了嗎!!!!"
+                    if message_suppressed and last_message_text == new_msg:
+                        # suppressed by player previously -> don't re-show
+                        pass
+                    else:
+                        message_text = new_msg
+                        show_message = True
+                        message_suppressed = False
+                        last_message_text = None
+                    print(new_msg)
+                    # set initial follow position
+                    if len(path_history) >= 3:
+                        puppy['pos'] = path_history[-3]
+            else:
+                # once activated and not delivered, puppy follows two tiles behind
+                if not puppy.get('delivered', False) and len(path_history) >= 3:
+                    puppy['pos'] = path_history[-3]
+
+        # 若玩家回到起點並且 puppy 已啟動未送達，視為送回家 -> 消失並顯示訊息
+        if level == 3 and puppy is not None and puppy.get('activated', False) and not puppy.get('delivered', False):
+            start_pos = (1, 1)
+            if (player['x'], player['y']) == start_pos:
+                puppy['delivered'] = True
+                puppy = None
+                new_msg = "謝謝你帶我回家"
+                if not (message_suppressed and last_message_text == new_msg):
+                    message_text = new_msg
+                    show_message = True
+                    message_suppressed = False
+                    last_message_text = None
+                print(new_msg)
+                exit_attempts = 0
 
 # ---------------------- 視野繪圖 ----------------------
 def draw_limited_view():
@@ -270,6 +402,10 @@ def draw_limited_view():
 
             if r == exit_pos['x'] and c == exit_pos['y']:
                 pygame.draw.rect(screen, EXIT_COLOR, rect)
+            # 第三關起點方塊 (可穿透)
+            if level == 3 and (r, c) == (1, 1):
+                inner = (rect[0]+CELL_SIZE//8, rect[1]+CELL_SIZE//8, CELL_SIZE*3//4, CELL_SIZE*3//4)
+                pygame.draw.rect(screen, START_COLOR, inner)
             # 畫陷阱（若該格是地面且目前可見）
             if (r, c) in traps:
                 # 畫一個小方塊代表陷阱
@@ -278,6 +414,10 @@ def draw_limited_view():
             # 畫怪物（若該格屬於怪物且目前可見）
             if monster is not None and (r, c) in monster['cells']:
                 pygame.draw.rect(screen, MONSTER_COLOR, rect)
+            # 畫心碎小狗（若在可見格）
+            if puppy is not None and (r, c) == puppy['pos']:
+                # 如果尚未啟動則視為阻擋方塊(整格)，啟動後改為可穿透但仍顯示
+                pygame.draw.rect(screen, PUPPY_COLOR, rect)
 
 # ---------------------- 繪圖 ----------------------
 def draw_exit_glow():
@@ -307,6 +447,13 @@ def draw_game():
                         pygame.draw.rect(screen, TRAP_COLOR, inner)
                     if monster is not None and (r, c) in monster['cells']:
                         pygame.draw.rect(screen, MONSTER_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
+                    # 第三關的起點方塊（橘色）
+                    if level == 3 and (r, c) == (1, 1):
+                        inner = (c*CELL_SIZE+CELL_SIZE//8, r*CELL_SIZE+CELL_SIZE//8, CELL_SIZE*3//4, CELL_SIZE*3//4)
+                        pygame.draw.rect(screen, START_COLOR, inner)
+                    # 心碎小狗（全圖模式也顯示）
+                    if puppy is not None and (r, c) == puppy['pos']:
+                        pygame.draw.rect(screen, PUPPY_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
     else:
         draw_limited_view()
 
@@ -319,12 +466,17 @@ def draw_game():
         text = font.render("Victory!", True, (255,255,0))
         screen.blit(text, (WIDTH//2-100, HEIGHT//2-24))
 
+    if show_message and message_text:
+        text = font.render(message_text, True, (255,255,255))
+        screen.blit(text, (20, HEIGHT - 60))
+
     pygame.display.flip()
 
 # ---------------------- 下一關迷宮生成 ----------------------
 def generate_maze_for_next_level():
     global maze, visible_map, show_victory
     global monster, reveal_until
+    global puppy, path_history, exit_attempts, show_message, message_text, message_suppressed, last_message_text
 
     maze = generate_perfect_maze()
     add_extra_paths(maze)
@@ -383,6 +535,32 @@ def generate_maze_for_next_level():
                             break
                 if placed:
                     break
+    # 第三關 - 放置心碎小狗（1 個），確保放置後出口仍可達
+    puppy = None
+    path_history.clear()
+    exit_attempts = 0
+    show_message = False
+    message_text = ""
+    if level == 3:
+        attempts = 200
+        for _ in range(attempts):
+            r = random.randint(1, ROWS-2)
+            c = random.randint(1, COLS-2)
+            if maze[r][c] != 0:
+                continue
+            if (r, c) == (player['x'], player['y']) or (r, c) == (exit_pos['x'], exit_pos['y']):
+                continue
+            if (r, c) in traps:
+                continue
+            if monster is not None and (r, c) in monster['cells']:
+                continue
+
+            maze[r][c] = 1
+            ok = is_reachable(maze, 1, 1, exit_pos['x'], exit_pos['y'])
+            maze[r][c] = 0
+            if ok:
+                puppy = {'pos': (r, c), 'activated': False, 'delivered': False}
+                break
 
 # ---------------------- 主程式 ----------------------
 generate_maze()
@@ -394,6 +572,15 @@ while running:
         if event.type==pygame.QUIT:
             running = False
         elif event.type==pygame.KEYDOWN:
+            # close any message overlay first (space to close)
+            if show_message and event.key == pygame.K_SPACE:
+                # suppress re-showing the same message until it changes
+                last_message_text = message_text
+                message_suppressed = True
+                show_message = False
+                message_text = ""
+                continue
+
             if show_victory:
                 if event.key == pygame.K_SPACE:
                     generate_maze()
