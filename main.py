@@ -25,6 +25,7 @@ WALL_COLOR = (255, 255, 255)
 PLAYER_COLOR = (255, 255, 0)
 EXIT_COLOR = (0, 255, 0)
 HIDDEN_COLOR = (0, 0, 0)  # ★遮蔽黑色
+TRAP_COLOR = (200, 0, 200)  # 新增：傳送陷阱顏色（紫色）
 
 # ---------------------- 遊戲狀態 ----------------------
 maze = []
@@ -32,6 +33,7 @@ player = {'x': 1, 'y': 1}
 exit_pos = {'x': ROWS - 2, 'y': COLS - 2}
 glow_time = 0
 show_victory = False
+traps = set()  # 存放 (r,c) 的傳送陷阱位置
 
 level = 1
 visible_map = None  # 第二關用：走過的格子
@@ -100,6 +102,18 @@ def generate_maze():
     player = {'x':1, 'y':1}
     show_victory = False
 
+    # ★ 在每張迷宮上隨機放置 3~7 個傳送陷阱，放在地面 (maze == 0) 上，且不能放在玩家起點或出口
+    traps.clear()
+    available = [(r, c) for r in range(ROWS) for c in range(COLS)
+                 if maze[r][c] == 0 and not (r == player['x'] and c == player['y'])
+                 and not (r == exit_pos['x'] and c == exit_pos['y'])]
+    trap_count = random.randint(3, 7)
+    if available:
+        trap_count = min(trap_count, len(available))
+        chosen = random.sample(available, trap_count)
+        for pos in chosen:
+            traps.add(pos)
+
     # 關卡視野設定
     if level == 1:
         visible_map = None
@@ -130,6 +144,29 @@ def move_player(dx, dy):
                 level += 1
                 generate_maze_for_next_level()
 
+        # ★ 處理傳送陷阱：如果踩到 trap，則立即傳送至地圖上另一個隨機非牆位置（排除出口與其他陷阱），並且移除該陷阱
+        if (nx, ny) in traps:
+            # remove the trap so it cannot be retriggered
+            traps.discard((nx, ny))
+
+            # 找所有可傳送的位置：非牆且不是其他陷阱、不是出口，也不能是玩家當前位置（避免原地傳送）
+            curr_pos = (nx, ny)
+            destinations = [(r, c) for r in range(ROWS) for c in range(COLS)
+                            if maze[r][c] == 0 and (r, c) not in traps
+                            and not (r == exit_pos['x'] and c == exit_pos['y'])
+                            and not (r, c) == curr_pos]
+            if destinations:
+                dest_r, dest_c = random.choice(destinations)
+                # 明確設定整數格座標以確保角色仍在格子中心
+                player['x'], player['y'] = int(dest_r), int(dest_c)
+
+                # 如果是第二關，也要把傳送到的新格子標記為已探索
+                if level == 2 and visible_map is not None:
+                    visible_map[int(dest_r)][int(dest_c)] = True
+            else:
+                # 沒有可傳送的合法位置：保留在原地，但已移除觸發陷阱
+                pass
+
 # ---------------------- 視野繪圖 ----------------------
 def draw_limited_view():
     radius = 2
@@ -159,6 +196,11 @@ def draw_limited_view():
 
             if r == exit_pos['x'] and c == exit_pos['y']:
                 pygame.draw.rect(screen, EXIT_COLOR, rect)
+            # 畫陷阱（若該格是地面且目前可見）
+            if (r, c) in traps:
+                # 畫一個小方塊代表陷阱
+                inner = (rect[0]+CELL_SIZE//6, rect[1]+CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3)
+                pygame.draw.rect(screen, TRAP_COLOR, inner)
 
 # ---------------------- 繪圖 ----------------------
 def draw_exit_glow():
@@ -179,6 +221,11 @@ def draw_game():
             for c in range(COLS):
                 if maze[r][c] == 1:
                     pygame.draw.rect(screen, WALL_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
+                else:
+                    pygame.draw.rect(screen, BG_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
+                    if (r, c) in traps:
+                        inner = (c*CELL_SIZE + CELL_SIZE//6, r*CELL_SIZE + CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3)
+                        pygame.draw.rect(screen, TRAP_COLOR, inner)
     else:
         draw_limited_view()
 
@@ -201,6 +248,17 @@ def generate_maze_for_next_level():
     add_extra_paths(maze)
     ensure_exit_reachable(maze)
     show_victory = False
+
+    # 下一關同樣要放陷阱（3~7 個）
+    traps.clear()
+    available = [(r, c) for r in range(ROWS) for c in range(COLS)
+                 if maze[r][c] == 0 and not (r == player['x'] and c == player['y'])
+                 and not (r == exit_pos['x'] and c == exit_pos['y'])]
+    trap_count = random.randint(3, 7)
+    if available:
+        trap_count = min(trap_count, len(available))
+        for pos in random.sample(available, trap_count):
+            traps.add(pos)
 
     if level == 2:
         visible_map = [[False]*COLS for _ in range(ROWS)]
