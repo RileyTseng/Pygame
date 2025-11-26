@@ -46,6 +46,7 @@ TRAP_COLOR = (200, 0, 200)  # 新增：傳送陷阱顏色（紫色）
 MONSTER_COLOR = (255, 105, 180)  # 粉紅色：半夜放閃的情侶（定點）
 PUPPY_COLOR = (255, 200, 200)  # 心碎小狗顏色（淺粉）
 START_COLOR = (255, 165, 0)  # 起點方塊（橘色），可穿透
+QUIZ_MONSTER_COLOR = (255, 0, 0)  # 紅色：中央常識題庫怪物（移動、可穿透）
 
 # ---------------------- 遊戲狀態 ----------------------
 maze = []
@@ -65,6 +66,24 @@ show_message = False
 message_text = ""
 message_suppressed = False  # if True, the last_message_text was closed by the player (space) and shouldn't re-show
 last_message_text = None
+
+# ---------------------- 中央常識題庫怪物（移動怪） ----------------------
+quiz_monsters = []  # list of {'pos':(r,c)}
+quiz_move_interval = 500  # ms between moves (0.5s)
+quiz_last_move = 0
+quiz_active = False
+quiz_current = None  # {'index': idx, 'question': q, 'answer': a, 'input': ''}
+quiz_input_focused = False
+quiz_caret_last = 0
+
+# 題庫（問題 -> 答案）
+QUESTIONS = [
+    ("中央大學後門那條路叫甚麼?", "中央路"),
+    ("中央松果餐廳的飲料店叫甚麼?", "Comebuy"),
+    ("中央裡面的全家打幾折", "85折"),
+    ("中央裡面的7-11打幾折", "9折"),
+    ("中央iHouse開到幾點?", "21:00"),
+]
 
 level = 1
 visible_map = None  # 第二關用：走過的格子
@@ -151,6 +170,32 @@ def generate_maze():
         chosen = random.sample(available, trap_count)
         for pos in chosen:
             traps.add(pos)
+
+    # 在所有關卡放置 5~6 個移動的題庫怪物（紅色，可穿透），不可生於起點或出口或陷阱或固定怪物占格
+    quiz_monsters.clear()
+    qm_count = random.randint(5, 6)
+    available_qm = [(r, c) for r in range(ROWS) for c in range(COLS)
+                    if maze[r][c] == 0 and (r, c) != (player['x'], player['y'])
+                    and (r, c) != (exit_pos['x'], exit_pos['y'])
+                    and (r, c) not in traps]
+    # also exclude two-cell monster cells if exists
+    if monster is not None:
+        for cell in monster['cells']:
+            if cell in available_qm:
+                available_qm.remove(cell)
+    # and avoid puppy location if present
+    if puppy is not None and puppy.get('pos') in available_qm:
+        available_qm.remove(puppy.get('pos'))
+
+    if available_qm:
+        qm_count = min(qm_count, len(available_qm))
+        chosen_qm = random.sample(available_qm, qm_count)
+        for pos in chosen_qm:
+            # Each quiz monster stores its current question/answer (None until it picks one)
+            quiz_monsters.append({'pos': pos, 'question': None, 'answer': None})
+    # reset movement timer
+    global quiz_last_move
+    quiz_last_move = pygame.time.get_ticks()
 
     # 在第二、三關可能放置 0~1 個「雙格怪物」；怪物佔兩個相鄰地面格，且不能放在起點、出口或陷阱位置
     # reset reveal state and monster reference for new maze
@@ -242,6 +287,7 @@ def move_player(dx, dy):
     global show_victory, level, visible_map
     global reveal_until
     global puppy, path_history, exit_attempts, show_message, message_text, message_suppressed, last_message_text
+    global quiz_monsters, quiz_active, quiz_current
 
     nx, ny = player['x'] + dx, player['y'] + dy
     # 不能移動到牆或怪物占格
@@ -373,6 +419,27 @@ def move_player(dx, dy):
                 print(new_msg)
                 exit_attempts = 0
 
+        # ---- 碰到 quiz monster by player movement (未觸發前重疊即觸發) ----
+        if not quiz_active:
+            for i, qm in enumerate(quiz_monsters):
+                if qm.get('pos') == (player['x'], player['y']):
+                    # choose a question for this monster when triggered
+                    if not qm.get('question'):
+                        q, a = random.choice(QUESTIONS)
+                        qm['question'], qm['answer'] = q, a
+                    else:
+                        q, a = qm['question'], qm['answer']
+                    quiz_active = True
+                    quiz_current = {'index': i, 'question': q, 'answer': a, 'input': ""}
+                    quiz_input_focused = True
+                    # enable IME / text input mode so TEXTINPUT events provide composed characters (Chinese)
+                    try:
+                        pygame.key.start_text_input()
+                    except Exception:
+                        pass
+                    print(q)
+                    break
+
 # ---------------------- 視野繪圖 ----------------------
 def draw_limited_view():
     radius = 2
@@ -418,6 +485,11 @@ def draw_limited_view():
             if puppy is not None and (r, c) == puppy['pos']:
                 # 如果尚未啟動則視為阻擋方塊(整格)，啟動後改為可穿透但仍顯示
                 pygame.draw.rect(screen, PUPPY_COLOR, rect)
+            # 畫移動題庫怪（若可見）
+            for qm in quiz_monsters:
+                if (r, c) == qm['pos']:
+                    inner = (rect[0]+CELL_SIZE//6, rect[1]+CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3)
+                    pygame.draw.rect(screen, QUIZ_MONSTER_COLOR, inner)
 
 # ---------------------- 繪圖 ----------------------
 def draw_exit_glow():
@@ -430,6 +502,7 @@ def draw_exit_glow():
         pygame.draw.circle(screen, EXIT_COLOR, (px,py), int(glow*(i/6)), 2)
 
 def draw_game():
+    global quiz_input_focused, quiz_caret_last
     screen.fill(BG_COLOR)
     current_time = pygame.time.get_ticks()
     reveal_active = current_time < reveal_until
@@ -454,6 +527,10 @@ def draw_game():
                     # 心碎小狗（全圖模式也顯示）
                     if puppy is not None and (r, c) == puppy['pos']:
                         pygame.draw.rect(screen, PUPPY_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
+                    # 顯示移動題庫怪
+                    for qm in quiz_monsters:
+                        if (r, c) == qm['pos']:
+                            pygame.draw.rect(screen, QUIZ_MONSTER_COLOR, (c*CELL_SIZE + CELL_SIZE//6, r*CELL_SIZE + CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3))
     else:
         draw_limited_view()
 
@@ -469,6 +546,33 @@ def draw_game():
     if show_message and message_text:
         text = font.render(message_text, True, (255,255,255))
         screen.blit(text, (20, HEIGHT - 60))
+
+    # quiz overlay for question/answer (centered white box)
+    if quiz_active and quiz_current is not None:
+        box_w, box_h = WIDTH * 2 // 3, HEIGHT // 3
+        box_x = (WIDTH - box_w) // 2
+        box_y = (HEIGHT - box_h) // 2
+        # white background
+        pygame.draw.rect(screen, (255,255,255), (box_x, box_y, box_w, box_h))
+        # question text (top part)
+        q_text = font.render(quiz_current['question'], True, (0,0,0))
+        screen.blit(q_text, (box_x + 20, box_y + 20))
+        # input box bottom area
+        input_box = (box_x + 20, box_y + box_h - 70, box_w - 40, 50)
+        pygame.draw.rect(screen, (230,230,230), input_box)
+        input_text = font.render(quiz_current.get('input', ''), True, (0,0,0))
+        screen.blit(input_text, (input_box[0] + 10, input_box[1] + 10))
+        # caret blinking when focused
+        if quiz_input_focused:
+            now = pygame.time.get_ticks()
+            if now - quiz_caret_last >= 500:
+                quiz_caret_last = now
+            # blink on/off every 500ms
+            if (now // 500) % 2 == 0:
+                caret_x = input_box[0] + 10 + input_text.get_width()
+                caret_y1 = input_box[1] + 8
+                caret_y2 = input_box[1] + 8 + input_text.get_height()
+                pygame.draw.line(screen, (0,0,0), (caret_x, caret_y1), (caret_x, caret_y2), 2)
 
     pygame.display.flip()
 
@@ -493,6 +597,28 @@ def generate_maze_for_next_level():
         trap_count = min(trap_count, len(available))
         for pos in random.sample(available, trap_count):
             traps.add(pos)
+
+    # 在所有關卡放置 5~6 個移動的題庫怪物（紅色，可穿透），不可生於起點或出口或陷阱或固定怪物占格
+    quiz_monsters.clear()
+    qm_count = random.randint(5, 6)
+    available_qm = [(r, c) for r in range(ROWS) for c in range(COLS)
+                    if maze[r][c] == 0 and (r, c) != (player['x'], player['y'])
+                    and (r, c) != (exit_pos['x'], exit_pos['y'])
+                    and (r, c) not in traps]
+    if monster is not None:
+        for cell in monster['cells']:
+            if cell in available_qm:
+                available_qm.remove(cell)
+    if puppy is not None and puppy.get('pos') in available_qm:
+        available_qm.remove(puppy.get('pos'))
+
+    if available_qm:
+        qm_count = min(qm_count, len(available_qm))
+        for pos in random.sample(available_qm, qm_count):
+            quiz_monsters.append({'pos': pos, 'question': None, 'answer': None})
+    # reset movement timer
+    global quiz_last_move
+    quiz_last_move = pygame.time.get_ticks()
 
     if level == 2:
         visible_map = [[False]*COLS for _ in range(ROWS)]
@@ -572,6 +698,53 @@ while running:
         if event.type==pygame.QUIT:
             running = False
         elif event.type==pygame.KEYDOWN:
+            # If quiz overlay is active, capture text input for it and skip normal key handling
+            if quiz_active:
+                if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+                    # submit answer
+                    if quiz_current is not None:
+                        user_ans = quiz_current['input'].strip()
+                        # case-insensitive compare for ascii answers
+                        correct = user_ans.lower() == quiz_current['answer'].strip().lower()
+                        idx = quiz_current['index']
+                        if correct:
+                            if 0 <= idx < len(quiz_monsters):
+                                # remove the quiz monster from the map on success
+                                del quiz_monsters[idx]
+                            quiz_active = False
+                            quiz_current = None
+                            # stop text input and unfocus
+                            try:
+                                pygame.key.stop_text_input()
+                            except Exception:
+                                pass
+                            quiz_input_focused = False
+                        else:
+                            # wrong -> clear the stored question for that monster so it will re-pick next time
+                            if 0 <= idx < len(quiz_monsters):
+                                quiz_monsters[idx]['question'] = None
+                                quiz_monsters[idx]['answer'] = None
+                            # send player back to start
+                            player['x'], player['y'] = 1, 1
+                            path_history.append((player['x'], player['y']))
+                            quiz_active = False
+                            quiz_current = None
+                            try:
+                                pygame.key.stop_text_input()
+                            except Exception:
+                                pass
+                            quiz_input_focused = False
+                elif event.key == pygame.K_BACKSPACE:
+                    if quiz_current is not None:
+                        quiz_current['input'] = quiz_current['input'][:-1]
+                else:
+                    if quiz_current is not None and event.unicode and quiz_input_focused:
+                        # limit input length
+                        if len(quiz_current['input']) < 120:
+                            quiz_current['input'] += event.unicode
+                # don't process other keys while in quiz
+                continue
+
             # close any message overlay first (space to close)
             if show_message and event.key == pygame.K_SPACE:
                 # suppress re-showing the same message until it changes
@@ -579,6 +752,10 @@ while running:
                 message_suppressed = True
                 show_message = False
                 message_text = ""
+                continue
+            # click/focus handled in MOUSEBUTTONDOWN; if the player presses TAB to toggle focus we support it
+            if quiz_active and event.key == pygame.K_TAB:
+                quiz_input_focused = not quiz_input_focused
                 continue
 
             if show_victory:
@@ -595,8 +772,66 @@ while running:
                     move_player(0,1)
                 elif event.key in [pygame.K_r, pygame.K_SPACE]:
                     generate_maze()
+        elif event.type == pygame.TEXTINPUT:
+            # IME / unicode text events for quiz input
+            if quiz_active and quiz_input_focused and quiz_current is not None:
+                if len(quiz_current['input']) < 120:
+                    quiz_current['input'] += event.text
         elif event.type==pygame.USEREVENT:
             generate_maze()
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            # if quiz overlay active, clicking inside the input box gives it focus
+            if quiz_active and quiz_current is not None:
+                mouse_x, mouse_y = event.pos
+                box_w, box_h = WIDTH * 2 // 3, HEIGHT // 3
+                box_x = (WIDTH - box_w) // 2
+                box_y = (HEIGHT - box_h) // 2
+                input_box = (box_x + 20, box_y + box_h - 70, box_w - 40, 50)
+                ix, iy, iw, ih = input_box
+                if ix <= mouse_x <= ix + iw and iy <= mouse_y <= iy + ih:
+                    quiz_input_focused = True
+                else:
+                    quiz_input_focused = False
+
+    # update moving quiz monsters every 0.5s (if no quiz active)
+    now = pygame.time.get_ticks()
+    if not quiz_active and quiz_monsters and now - quiz_last_move >= quiz_move_interval:
+        for qm in quiz_monsters:
+            # try a random direction; if invalid keep position
+            dirs = [(1,0), (-1,0), (0,1), (0,-1)]
+            random.shuffle(dirs)
+            for dr, dc in dirs:
+                nr, nc = qm['pos'][0] + dr, qm['pos'][1] + dc
+                # cannot move out of bounds, into wall, or into start (1,1)
+                if 0 <= nr < ROWS and 0 <= nc < COLS and maze[nr][nc] == 0 and (nr, nc) != (1,1):
+                    # do not move into player's exact position if that would immediately trigger
+                    qm['pos'] = (nr, nc)
+                    break
+            # if a quiz monster moved onto the player, trigger the quiz (if not cleared)
+            if qm.get('pos') == (player['x'], player['y']) and not quiz_active:
+                # if this monster hasn't chosen a question yet, give it one now
+                if not qm.get('question'):
+                    q, a = random.choice(QUESTIONS)
+                    qm['question'], qm['answer'] = q, a
+                else:
+                    q, a = qm['question'], qm['answer']
+                quiz_active = True
+                # find index
+                idx = quiz_monsters.index(qm)
+                quiz_current = {'index': idx, 'question': q, 'answer': a, 'input': ""}
+                quiz_input_focused = True
+                try:
+                    pygame.key.start_text_input()
+                except Exception:
+                    pass
+                print(q)
+                quiz_input_focused = True
+                try:
+                    pygame.key.start_text_input()
+                except Exception:
+                    pass
+                print(q)
+        quiz_last_move = now
 
     draw_game()
 
