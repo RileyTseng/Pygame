@@ -142,6 +142,141 @@ def ensure_exit_reachable(maze):
                         cx, cy = nx, ny
                         break
 
+# ---------------------- 實體 / 物件生成 helpers ----------------------
+def spawn_traps():
+    global traps
+    traps.clear()
+    available = [(r, c) for r in range(ROWS) for c in range(COLS)
+                 if maze[r][c] == 0 and not (r == player['x'] and c == player['y'])
+                 and not (r == exit_pos['x'] and c == exit_pos['y'])]
+    trap_count = random.randint(3, 7)
+    if available:
+        trap_count = min(trap_count, len(available))
+        chosen = random.sample(available, trap_count)
+        for pos in chosen:
+            traps.add(pos)
+
+def spawn_quiz_monsters():
+    global quiz_monsters, quiz_last_move
+    quiz_monsters.clear()
+    qm_count = random.randint(5, 6)
+    available_qm = [(r, c) for r in range(ROWS) for c in range(COLS)
+                    if maze[r][c] == 0 and (r, c) != (player['x'], player['y'])
+                    and (r, c) != (exit_pos['x'], exit_pos['y'])
+                    and (r, c) not in traps]
+    if monster is not None:
+        for cell in monster['cells']:
+            if cell in available_qm:
+                available_qm.remove(cell)
+    # and avoid puppy location if present
+    if puppy is not None and puppy.get('pos') in available_qm:
+        available_qm.remove(puppy.get('pos'))
+
+    if available_qm:
+        qm_count = min(qm_count, len(available_qm))
+        chosen_qm = random.sample(available_qm, qm_count)
+        for pos in chosen_qm:
+            quiz_monsters.append({'pos': pos, 'question': None, 'answer': None})
+    quiz_last_move = pygame.time.get_ticks()
+
+def spawn_static_monster():
+    global monster, reveal_until
+    monster = None
+    reveal_until = 0
+    if level in (2, 3) and random.randint(0, 1) == 1:
+        attempts = 200
+        placed = False
+        for _ in range(attempts):
+            r = random.randint(1, ROWS-2)
+            c = random.randint(1, COLS-2)
+            if maze[r][c] != 0:
+                continue
+            dirs = [(1,0), (-1,0), (0,1), (0,-1)]
+            random.shuffle(dirs)
+            for dr, dc in dirs:
+                r2, c2 = r+dr, c+dc
+                if 0 <= r2 < ROWS and 0 <= c2 < COLS and maze[r2][c2] == 0:
+                    if (r, c) == (player['x'], player['y']) or (r2, c2) == (player['x'], player['y']):
+                        continue
+                    if (r, c) == (exit_pos['x'], exit_pos['y']) or (r2, c2) == (exit_pos['x'], exit_pos['y']):
+                        continue
+                    if (r, c) in traps or (r2, c2) in traps:
+                        continue
+
+                    maze[r][c] = 1
+                    maze[r2][c2] = 1
+                    reachable = is_reachable(maze, 1, 1, exit_pos['x'], exit_pos['y'])
+                    maze[r][c] = 0
+                    maze[r2][c2] = 0
+                    if reachable:
+                        monster = {'cells': {(r, c), (r2, c2)}, 'triggered': False}
+                        placed = True
+                        break
+            if placed:
+                break
+
+def spawn_puppy():
+    global puppy, path_history, exit_attempts, show_message, message_text
+    puppy = None
+    path_history.clear()
+    path_history.append((player['x'], player['y']))
+    exit_attempts = 0
+    show_message = False
+    message_text = ""
+    if level == 3:
+        attempts = 200
+        for _ in range(attempts):
+            r = random.randint(1, ROWS-2)
+            c = random.randint(1, COLS-2)
+            if maze[r][c] != 0:
+                continue
+            if (r, c) == (player['x'], player['y']) or (r, c) == (exit_pos['x'], exit_pos['y']):
+                continue
+            if (r, c) in traps:
+                continue
+            if monster is not None and (r, c) in monster['cells']:
+                continue
+
+            maze[r][c] = 1
+            ok = is_reachable(maze, 1, 1, exit_pos['x'], exit_pos['y'])
+            maze[r][c] = 0
+            if ok:
+                puppy = {'pos': (r, c), 'activated': False, 'delivered': False}
+                break
+
+# ---------------------- 更新與繪圖 helpers ----------------------
+
+def draw_cell_entities(r, c, rect, in_current_view):
+    """Draw any entities on a cell (traps, static 2-cell monster, puppy, moving quiz monsters).
+       This keeps drawing logic centralized and easier to read."""
+    # exit
+    if r == exit_pos['x'] and c == exit_pos['y']:
+        pygame.draw.rect(screen, EXIT_COLOR, rect)
+
+    # start (level 3) small orange inner square
+    if level == 3 and (r, c) == (1, 1):
+        inner = (rect[0]+CELL_SIZE//8, rect[1]+CELL_SIZE//8, CELL_SIZE*3//4, CELL_SIZE*3//4)
+        pygame.draw.rect(screen, START_COLOR, inner)
+
+    # traps (draw small square)
+    if (r, c) in traps and in_current_view:
+        inner = (rect[0]+CELL_SIZE//6, rect[1]+CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3)
+        pygame.draw.rect(screen, TRAP_COLOR, inner)
+
+    # static two-cell monster (full square)
+    if monster is not None and (r, c) in monster['cells'] and in_current_view:
+        pygame.draw.rect(screen, MONSTER_COLOR, rect)
+
+    # puppy
+    if puppy is not None and (r, c) == puppy['pos'] and in_current_view:
+        pygame.draw.rect(screen, PUPPY_COLOR, rect)
+
+    # moving quiz monsters (small inner square)
+    for qm in quiz_monsters:
+        if (r, c) == qm['pos'] and in_current_view:
+            inner = (rect[0]+CELL_SIZE//6, rect[1]+CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3)
+            pygame.draw.rect(screen, QUIZ_MONSTER_COLOR, inner)
+
 def generate_maze():
     global maze, player, show_victory
     global level, visible_map
@@ -159,86 +294,16 @@ def generate_maze():
     # start path history with starting position
     path_history.append((player['x'], player['y']))
 
-    # ★ 在每張迷宮上隨機放置 3~7 個傳送陷阱，放在地面 (maze == 0) 上，且不能放在玩家起點或出口
-    traps.clear()
-    available = [(r, c) for r in range(ROWS) for c in range(COLS)
-                 if maze[r][c] == 0 and not (r == player['x'] and c == player['y'])
-                 and not (r == exit_pos['x'] and c == exit_pos['y'])]
-    trap_count = random.randint(3, 7)
-    if available:
-        trap_count = min(trap_count, len(available))
-        chosen = random.sample(available, trap_count)
-        for pos in chosen:
-            traps.add(pos)
+    # spawn traps and moving quiz monsters
+    spawn_traps()
 
-    # 在所有關卡放置 5~6 個移動的題庫怪物（紅色，可穿透），不可生於起點或出口或陷阱或固定怪物占格
-    quiz_monsters.clear()
-    qm_count = random.randint(5, 6)
-    available_qm = [(r, c) for r in range(ROWS) for c in range(COLS)
-                    if maze[r][c] == 0 and (r, c) != (player['x'], player['y'])
-                    and (r, c) != (exit_pos['x'], exit_pos['y'])
-                    and (r, c) not in traps]
-    # also exclude two-cell monster cells if exists
-    if monster is not None:
-        for cell in monster['cells']:
-            if cell in available_qm:
-                available_qm.remove(cell)
-    # and avoid puppy location if present
-    if puppy is not None and puppy.get('pos') in available_qm:
-        available_qm.remove(puppy.get('pos'))
-
-    if available_qm:
-        qm_count = min(qm_count, len(available_qm))
-        chosen_qm = random.sample(available_qm, qm_count)
-        for pos in chosen_qm:
-            # Each quiz monster stores its current question/answer (None until it picks one)
-            quiz_monsters.append({'pos': pos, 'question': None, 'answer': None})
-    # reset movement timer
-    global quiz_last_move
-    quiz_last_move = pygame.time.get_ticks()
+    spawn_quiz_monsters()
 
     # 在第二、三關可能放置 0~1 個「雙格怪物」；怪物佔兩個相鄰地面格，且不能放在起點、出口或陷阱位置
     # reset reveal state and monster reference for new maze
     monster = None
     reveal_until = 0
-    if level in (2, 3):
-        if random.randint(0, 1) == 1:  # 0 或 1
-            # try a number of random attempts to find a valid 2-cell placement that doesn't block exit
-            attempts = 200
-            placed = False
-            for _ in range(attempts):
-                # pick a base floor cell
-                r = random.randint(1, ROWS-2)
-                c = random.randint(1, COLS-2)
-                if maze[r][c] != 0:
-                    continue
-                # choose an adjacent direction
-                dirs = [(1,0), (-1,0), (0,1), (0,-1)]
-                random.shuffle(dirs)
-                for dr, dc in dirs:
-                    r2, c2 = r+dr, c+dc
-                    if 0 <= r2 < ROWS and 0 <= c2 < COLS and maze[r2][c2] == 0:
-                        # ensure not overlapping with player start, exit, or traps
-                        if (r, c) == (player['x'], player['y']) or (r2, c2) == (player['x'], player['y']):
-                            continue
-                        if (r, c) == (exit_pos['x'], exit_pos['y']) or (r2, c2) == (exit_pos['x'], exit_pos['y']):
-                            continue
-                        if (r, c) in traps or (r2, c2) in traps:
-                            continue
-
-                        # Temporarily treat these two cells as walls and check reachability
-                        maze[r][c] = 1
-                        maze[r2][c2] = 1
-                        reachable = is_reachable(maze, 1, 1, exit_pos['x'], exit_pos['y'])
-                        # restore
-                        maze[r][c] = 0
-                        maze[r2][c2] = 0
-                        if reachable:
-                            monster = {'cells': {(r, c), (r2, c2)}, 'triggered': False}
-                            placed = True
-                            break
-                if placed:
-                    break
+    spawn_static_monster()
 
     # 關卡視野設定
     if level == 1:
@@ -248,39 +313,7 @@ def generate_maze():
         visible_map[player['x']][player['y']] = True
     elif level == 3:
         visible_map = None
-    # 第三關：必定生成 1 個心碎小狗（單格，不可穿過），放置時需保證出口可達
-    puppy = None
-    path_history.clear()
-    path_history.append((player['x'], player['y']))
-    exit_attempts = 0
-    show_message = False
-    message_text = ""
-    message_suppressed = False
-    last_message_text = None
-    message_suppressed = False
-    last_message_text = None
-    if level == 3:
-        # find a candidate floor tile not start/exit/traps/other monster and that doesn't block the path
-        attempts = 200
-        for _ in range(attempts):
-            r = random.randint(1, ROWS-2)
-            c = random.randint(1, COLS-2)
-            if maze[r][c] != 0:
-                continue
-            if (r, c) == (player['x'], player['y']) or (r, c) == (exit_pos['x'], exit_pos['y']):
-                continue
-            if (r, c) in traps:
-                continue
-            if monster is not None and (r, c) in monster['cells']:
-                continue
-
-            # temporarily mark puppy tile as wall to test reachability
-            maze[r][c] = 1
-            ok = is_reachable(maze, 1, 1, exit_pos['x'], exit_pos['y'])
-            maze[r][c] = 0
-            if ok:
-                puppy = {'pos': (r, c), 'activated': False, 'delivered': False}
-                break
+    spawn_puppy()
 
 # ---------------------- 遊戲邏輯 ----------------------
 def move_player(dx, dy):
@@ -467,29 +500,8 @@ def draw_limited_view():
             else:
                 pygame.draw.rect(screen, BG_COLOR, rect)
 
-            if r == exit_pos['x'] and c == exit_pos['y']:
-                pygame.draw.rect(screen, EXIT_COLOR, rect)
-            # 第三關起點方塊 (可穿透)
-            if level == 3 and (r, c) == (1, 1):
-                inner = (rect[0]+CELL_SIZE//8, rect[1]+CELL_SIZE//8, CELL_SIZE*3//4, CELL_SIZE*3//4)
-                pygame.draw.rect(screen, START_COLOR, inner)
-            # 畫陷阱（若該格是地面且目前可見）
-            if (r, c) in traps:
-                # 畫一個小方塊代表陷阱
-                inner = (rect[0]+CELL_SIZE//6, rect[1]+CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3)
-                pygame.draw.rect(screen, TRAP_COLOR, inner)
-            # 畫怪物（若該格屬於怪物且目前可見）
-            if monster is not None and (r, c) in monster['cells']:
-                pygame.draw.rect(screen, MONSTER_COLOR, rect)
-            # 畫心碎小狗（若在可見格）
-            if puppy is not None and (r, c) == puppy['pos']:
-                # 如果尚未啟動則視為阻擋方塊(整格)，啟動後改為可穿透但仍顯示
-                pygame.draw.rect(screen, PUPPY_COLOR, rect)
-            # 畫移動題庫怪（若可見）
-            for qm in quiz_monsters:
-                if (r, c) == qm['pos']:
-                    inner = (rect[0]+CELL_SIZE//6, rect[1]+CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3)
-                    pygame.draw.rect(screen, QUIZ_MONSTER_COLOR, inner)
+            # draw entities on visible cell
+            draw_cell_entities(r, c, rect, True)
 
 # ---------------------- 繪圖 ----------------------
 def draw_exit_glow():
@@ -515,22 +527,8 @@ def draw_game():
                     pygame.draw.rect(screen, WALL_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
                 else:
                     pygame.draw.rect(screen, BG_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
-                    if (r, c) in traps:
-                        inner = (c*CELL_SIZE + CELL_SIZE//6, r*CELL_SIZE + CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3)
-                        pygame.draw.rect(screen, TRAP_COLOR, inner)
-                    if monster is not None and (r, c) in monster['cells']:
-                        pygame.draw.rect(screen, MONSTER_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
-                    # 第三關的起點方塊（橘色）
-                    if level == 3 and (r, c) == (1, 1):
-                        inner = (c*CELL_SIZE+CELL_SIZE//8, r*CELL_SIZE+CELL_SIZE//8, CELL_SIZE*3//4, CELL_SIZE*3//4)
-                        pygame.draw.rect(screen, START_COLOR, inner)
-                    # 心碎小狗（全圖模式也顯示）
-                    if puppy is not None and (r, c) == puppy['pos']:
-                        pygame.draw.rect(screen, PUPPY_COLOR, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE))
-                    # 顯示移動題庫怪
-                    for qm in quiz_monsters:
-                        if (r, c) == qm['pos']:
-                            pygame.draw.rect(screen, QUIZ_MONSTER_COLOR, (c*CELL_SIZE + CELL_SIZE//6, r*CELL_SIZE + CELL_SIZE//6, CELL_SIZE*2//3, CELL_SIZE*2//3))
+                    # draw entities on full/reveal view
+                    draw_cell_entities(r, c, (c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE), True)
     else:
         draw_limited_view()
 
@@ -587,38 +585,9 @@ def generate_maze_for_next_level():
     ensure_exit_reachable(maze)
     show_victory = False
 
-    # 下一關同樣要放陷阱（3~7 個）
-    traps.clear()
-    available = [(r, c) for r in range(ROWS) for c in range(COLS)
-                 if maze[r][c] == 0 and not (r == player['x'] and c == player['y'])
-                 and not (r == exit_pos['x'] and c == exit_pos['y'])]
-    trap_count = random.randint(3, 7)
-    if available:
-        trap_count = min(trap_count, len(available))
-        for pos in random.sample(available, trap_count):
-            traps.add(pos)
+    spawn_traps()
 
-    # 在所有關卡放置 5~6 個移動的題庫怪物（紅色，可穿透），不可生於起點或出口或陷阱或固定怪物占格
-    quiz_monsters.clear()
-    qm_count = random.randint(5, 6)
-    available_qm = [(r, c) for r in range(ROWS) for c in range(COLS)
-                    if maze[r][c] == 0 and (r, c) != (player['x'], player['y'])
-                    and (r, c) != (exit_pos['x'], exit_pos['y'])
-                    and (r, c) not in traps]
-    if monster is not None:
-        for cell in monster['cells']:
-            if cell in available_qm:
-                available_qm.remove(cell)
-    if puppy is not None and puppy.get('pos') in available_qm:
-        available_qm.remove(puppy.get('pos'))
-
-    if available_qm:
-        qm_count = min(qm_count, len(available_qm))
-        for pos in random.sample(available_qm, qm_count):
-            quiz_monsters.append({'pos': pos, 'question': None, 'answer': None})
-    # reset movement timer
-    global quiz_last_move
-    quiz_last_move = pygame.time.get_ticks()
+    spawn_quiz_monsters()
 
     if level == 2:
         visible_map = [[False]*COLS for _ in range(ROWS)]
@@ -626,67 +595,8 @@ def generate_maze_for_next_level():
     elif level == 3:
         visible_map = None
 
-    # 同樣在下一關嘗試放置 0~1 個怪物（第二、三關）
-    monster = None
-    reveal_until = 0
-    if level in (2, 3):
-        if random.randint(0, 1) == 1:
-            attempts = 200
-            placed = False
-            for _ in range(attempts):
-                r = random.randint(1, ROWS-2)
-                c = random.randint(1, COLS-2)
-                if maze[r][c] != 0:
-                    continue
-                dirs = [(1,0), (-1,0), (0,1), (0,-1)]
-                random.shuffle(dirs)
-                for dr, dc in dirs:
-                    r2, c2 = r+dr, c+dc
-                    if 0 <= r2 < ROWS and 0 <= c2 < COLS and maze[r2][c2] == 0:
-                        if (r, c) == (player['x'], player['y']) or (r2, c2) == (player['x'], player['y']):
-                            continue
-                        if (r, c) == (exit_pos['x'], exit_pos['y']) or (r2, c2) == (exit_pos['x'], exit_pos['y']):
-                            continue
-                        if (r, c) in traps or (r2, c2) in traps:
-                            continue
-
-                        maze[r][c] = 1
-                        maze[r2][c2] = 1
-                        reachable = is_reachable(maze, 1, 1, exit_pos['x'], exit_pos['y'])
-                        maze[r][c] = 0
-                        maze[r2][c2] = 0
-                        if reachable:
-                            monster = {'cells': {(r, c), (r2, c2)}, 'triggered': False}
-                            placed = True
-                            break
-                if placed:
-                    break
-    # 第三關 - 放置心碎小狗（1 個），確保放置後出口仍可達
-    puppy = None
-    path_history.clear()
-    exit_attempts = 0
-    show_message = False
-    message_text = ""
-    if level == 3:
-        attempts = 200
-        for _ in range(attempts):
-            r = random.randint(1, ROWS-2)
-            c = random.randint(1, COLS-2)
-            if maze[r][c] != 0:
-                continue
-            if (r, c) == (player['x'], player['y']) or (r, c) == (exit_pos['x'], exit_pos['y']):
-                continue
-            if (r, c) in traps:
-                continue
-            if monster is not None and (r, c) in monster['cells']:
-                continue
-
-            maze[r][c] = 1
-            ok = is_reachable(maze, 1, 1, exit_pos['x'], exit_pos['y'])
-            maze[r][c] = 0
-            if ok:
-                puppy = {'pos': (r, c), 'activated': False, 'delivered': False}
-                break
+    spawn_static_monster()
+    spawn_puppy()
 
 # ---------------------- 主程式 ----------------------
 generate_maze()
