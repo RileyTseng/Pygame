@@ -17,6 +17,8 @@ pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Maze Game - 3 Levels")
 clock = pygame.time.Clock()
+# 狀態：是否在說明畫面
+show_intro = True
 # Pick a font that supports Chinese characters; prefer common Windows fonts then fall back to default.
 font_candidates = [
     "Microsoft JhengHei", "Microsoft JhengHei UI", "SimHei", "SimSun",
@@ -716,6 +718,20 @@ while running:
     for event in pygame.event.get():
         if event.type==pygame.QUIT:
             running = False
+        # intro 畫面處理
+        if show_intro:
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = event.pos
+                btn_w, btn_h = 200, 60
+                btn_x = WIDTH//2 - btn_w//2
+                btn_y = HEIGHT - 100
+                if btn_x <= mx <= btn_x+btn_w and btn_y <= my <= btn_y+btn_h:
+                    show_intro = False
+            elif event.type == pygame.KEYDOWN:
+                # 按 Enter 或空白也可開始
+                if event.key in [pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE]:
+                    show_intro = False
+            continue
         elif event.type==pygame.KEYDOWN:
             # If quiz overlay is active, only handle special keys here (Enter, Backspace, Tab)
             if quiz_active:
@@ -844,6 +860,94 @@ while running:
                 print(q)
         quiz_last_move = now
 
-    draw_game()
+    if show_intro:
+        # 遊戲說明畫面
+        screen.fill((255,255,255))
+        # 標題縮小一半
+        title_font = pygame.font.Font(font_path, 30) if font_path else pygame.font.SysFont(None, 30)
+        title = title_font.render("歡迎來到: 迷路的分店:迷宮", True, (0,26,51))
+        screen.blit(title, (WIDTH//2 - title.get_width()//2, 20))
+
+
+        # 角色介紹（字放大1.25倍，並加圖示，超出自動換行）
+        info_font_size = int(16 * 1.25)
+        info_font = pygame.font.Font(font_path, info_font_size) if font_path else pygame.font.SysFont(None, info_font_size)
+        y = 70
+        max_width = WIDTH - 110  # 85起始 + 25邊界
+        # 角色圖示資料: (顏色, 說明)
+        role_icons = [
+            (QUIZ_MONSTER_COLOR, "紅色隨機移動方塊: 問題怪物，玩家觸碰到該角色後必須回答問題，若回答正確即可繼續遊戲，若回答錯誤則被遣返原點。"),
+            (TRAP_COLOR, "紫色固定方塊: 隨機傳送通道，玩家觸碰該角色後會被隨機傳送到迷宮的任何一個位置。"),
+            (PUPPY_COLOR, "膚色方塊: 心碎小狗，玩家觸碰該角色後必須帶著小狗回到原點(心碎小狗的家)，否則無法過關。"),
+            (MONSTER_COLOR, "粉色雙格方塊: 放閃情侶，玩家觸碰到該角色後有一段可以看見迷宮全知視野的時間。"),
+        ]
+        # 角色介紹標題
+        text = info_font.render("角色介紹", True, (0,26,51))
+        screen.blit(text, (60, y))
+        y += info_font_size + 6
+        for color, desc in role_icons:
+            # 畫方塊圖示
+            pygame.draw.rect(screen, color, (60, y+2, 18, 18), border_radius=4)
+            # 文字自動換行
+            words = desc.split(' ')
+            line = ''
+            lines = []
+            for word in words:
+                test_line = line + ('' if line == '' else ' ') + word
+                if info_font.size(test_line)[0] > max_width:
+                    if line:
+                        lines.append(line)
+                    line = word
+                else:
+                    line = test_line
+            if line:
+                lines.append(line)
+            for i, l in enumerate(lines):
+                text = info_font.render(l, True, (0,26,51))
+                screen.blit(text, (85, y + i * (info_font_size + 2)))
+            y += (info_font_size + 2) * len(lines) + 6
+
+        y += 6
+        # 關卡介紹（字放大1.25倍，超出自動換行）
+        text = info_font.render("關卡介紹", True, (0,26,51))
+        screen.blit(text, (60, y))
+        y += info_font_size + 2
+        stage_lines = [
+            "第一關: 全知視野+問題怪物+隨機傳送通道",
+            "第二關: 有限視野+問題怪物+隨機傳送通道+放閃情侶",
+            "第三關: 有限視野+問題怪物+隨機傳送通道+放閃情侶+心碎小狗",
+        ]
+        for line in stage_lines:
+            # 關卡說明自動換行
+            words = line.split(' ')
+            l = ''
+            lines = []
+            for word in words:
+                test_line = l + ('' if l == '' else ' ') + word
+                if info_font.size(test_line)[0] > max_width:
+                    if l:
+                        lines.append(l)
+                    l = word
+                else:
+                    l = test_line
+            if l:
+                lines.append(l)
+            for i, ll in enumerate(lines):
+                text = info_font.render(ll, True, (0,26,51))
+                screen.blit(text, (85, y + i * (info_font_size + 2)))
+            y += (info_font_size + 2) * len(lines)
+
+        # start 按鈕
+        btn_w, btn_h = 200, 60
+        btn_x = WIDTH//2 - btn_w//2
+        btn_y = HEIGHT - 100
+        pygame.draw.rect(screen, (0,26,51), (btn_x, btn_y, btn_w, btn_h), border_radius=16)
+        btn_font = pygame.font.Font(font_path, 18) if font_path else pygame.font.SysFont(None, 18)
+        btn_text = btn_font.render("START", True, (255,255,255))
+        screen.blit(btn_text, (btn_x + btn_w//2 - btn_text.get_width()//2, btn_y + btn_h//2 - btn_text.get_height()//2))
+        pygame.display.flip()
+        continue
+    else:
+        draw_game()
 
 pygame.quit()
