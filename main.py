@@ -78,8 +78,8 @@ quiz_caret_last = 0
 
 # 題庫（問題 -> 答案）
 QUESTIONS = [
-    ("中央大學後門那條路叫甚麼?", "中央路"),
-    ("中央松果餐廳的飲料店叫甚麼?", "Comebuy"),
+    ("中央大學英文全名", "National Central University"),
+    ("中央松果餐廳的飲料店叫?", "Comebuy"),
     ("中央裡面的全家打幾折", "85折"),
     ("中央裡面的7-11打幾折", "9折"),
     ("中央iHouse開到幾點?", "21:00"),
@@ -558,20 +558,39 @@ def draw_game():
         q_text = font.render(quiz_current['question'], True, (0,0,0))
         screen.blit(q_text, (box_x + 20, box_y + 20))
         # input box bottom area
-        input_box = (box_x + 20, box_y + box_h - 70, box_w - 40, 50)
+        # 增加作答框寬度（原本 box_w - 40，改為 box_w * 1.5 - 40，並限制不超過畫面寬度-40）
+        # 作答框長度為白色區域的0.9倍，左右有邊界
+        input_box_width = int(box_w * 0.9)
+        input_box_height = int(50 * 1.5)
+        input_box_x = box_x + (box_w - input_box_width) // 2
+        input_box_y = box_y + box_h - input_box_height - 15
+        input_box = (input_box_x, input_box_y, input_box_width, input_box_height)
         pygame.draw.rect(screen, (230,230,230), input_box)
-        input_text = font.render(quiz_current.get('input', ''), True, (0,0,0))
-        screen.blit(input_text, (input_box[0] + 10, input_box[1] + 10))
-        # caret blinking when focused
+        # 處理作答內容超出框時的水平捲動
+        user_input = quiz_current.get('input', '')
+        input_text = font.render(user_input, True, (0,0,0))
+        max_text_width = input_box[2] - 20  # 框內可用寬度（左右各留 10px）
+        if input_text.get_width() > max_text_width:
+            # 計算要顯示的子字串（從右邊開始顯示）
+            cut = len(user_input)
+            while cut > 0 and font.render(user_input[-cut:], True, (0,0,0)).get_width() > max_text_width:
+                cut -= 1
+            display_text = user_input[-cut:]
+            display_render = font.render(display_text, True, (0,0,0))
+        else:
+            display_text = user_input
+            display_render = input_text
+        screen.blit(display_render, (input_box[0] + 10, input_box[1] + 10))
+        # caret blinking when focused，游標位置跟隨顯示文字
         if quiz_input_focused:
             now = pygame.time.get_ticks()
             if now - quiz_caret_last >= 500:
                 quiz_caret_last = now
             # blink on/off every 500ms
             if (now // 500) % 2 == 0:
-                caret_x = input_box[0] + 10 + input_text.get_width()
+                caret_x = input_box[0] + 10 + display_render.get_width()
                 caret_y1 = input_box[1] + 8
-                caret_y2 = input_box[1] + 8 + input_text.get_height()
+                caret_y2 = input_box[1] + 8 + display_render.get_height()
                 pygame.draw.line(screen, (0,0,0), (caret_x, caret_y1), (caret_x, caret_y2), 2)
 
     pygame.display.flip()
@@ -698,33 +717,28 @@ while running:
         if event.type==pygame.QUIT:
             running = False
         elif event.type==pygame.KEYDOWN:
-            # If quiz overlay is active, capture text input for it and skip normal key handling
+            # If quiz overlay is active, only handle special keys here (Enter, Backspace, Tab)
             if quiz_active:
                 if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
                     # submit answer
                     if quiz_current is not None:
                         user_ans = quiz_current['input'].strip()
-                        # case-insensitive compare for ascii answers
                         correct = user_ans.lower() == quiz_current['answer'].strip().lower()
                         idx = quiz_current['index']
                         if correct:
                             if 0 <= idx < len(quiz_monsters):
-                                # remove the quiz monster from the map on success
                                 del quiz_monsters[idx]
                             quiz_active = False
                             quiz_current = None
-                            # stop text input and unfocus
                             try:
                                 pygame.key.stop_text_input()
                             except Exception:
                                 pass
                             quiz_input_focused = False
                         else:
-                            # wrong -> clear the stored question for that monster so it will re-pick next time
                             if 0 <= idx < len(quiz_monsters):
                                 quiz_monsters[idx]['question'] = None
                                 quiz_monsters[idx]['answer'] = None
-                            # send player back to start
                             player['x'], player['y'] = 1, 1
                             path_history.append((player['x'], player['y']))
                             quiz_active = False
@@ -737,11 +751,8 @@ while running:
                 elif event.key == pygame.K_BACKSPACE:
                     if quiz_current is not None:
                         quiz_current['input'] = quiz_current['input'][:-1]
-                else:
-                    if quiz_current is not None and event.unicode and quiz_input_focused:
-                        # limit input length
-                        if len(quiz_current['input']) < 120:
-                            quiz_current['input'] += event.unicode
+                elif event.key == pygame.K_TAB:
+                    quiz_input_focused = not quiz_input_focused
                 # don't process other keys while in quiz
                 continue
 
