@@ -335,11 +335,14 @@ def move_player(dx, dy):
                 print(new_msg)
             else:
                 show_victory = True
-                pygame.time.set_timer(pygame.USEREVENT, 2000, loops=1)
-
-                if level < 3:
-                    level += 1
-                    generate_maze_for_next_level()
+                if level == 3:
+                    # 第三關勝利，5 秒後自動關閉
+                    pygame.time.set_timer(pygame.USEREVENT + 1, 5000, loops=1)
+                else:
+                    pygame.time.set_timer(pygame.USEREVENT, 2000, loops=1)
+                    if level < 3:
+                        level += 1
+                        generate_maze_for_next_level()
 
         # ★ 處理傳送陷阱：如果踩到 trap，則立即傳送至地圖上另一個隨機非牆位置（排除出口與其他陷阱），並且移除該陷阱
         if (nx, ny) in traps:
@@ -806,6 +809,9 @@ while running:
                     quiz_current['input'] += event.text
         elif event.type==pygame.USEREVENT:
             generate_maze()
+        elif event.type == pygame.USEREVENT + 1:
+            # 第三關勝利後 5 秒自動關閉
+            running = False
         elif event.type == pygame.MOUSEBUTTONDOWN:
             # if quiz overlay active, clicking inside the input box gives it focus
             if quiz_active and quiz_current is not None:
@@ -873,10 +879,11 @@ while running:
         info_font_size = int(16 * 1.25)
         info_font = pygame.font.Font(font_path, info_font_size) if font_path else pygame.font.SysFont(None, info_font_size)
         y = 70
-        max_width = WIDTH - 110  # 85起始 + 25邊界
+        max_width = WIDTH - 110  # 85起始 + 25邊界 
+ 
         # 角色圖示資料: (顏色, 說明)
         role_icons = [
-            (QUIZ_MONSTER_COLOR, "紅色隨機移動方塊: 問題怪物，玩家觸碰到該角色後必須回答問題，若回答正確即可繼續遊戲，若回答錯誤則被遣返原點。"),
+            (QUIZ_MONSTER_COLOR, "紅色隨機移動方塊: 問題怪物，玩家觸碰到該角色後須回答問題，若正確即可繼續遊戲，若錯誤則被遣返原點。"),
             (TRAP_COLOR, "紫色固定方塊: 隨機傳送通道，玩家觸碰該角色後會被隨機傳送到迷宮的任何一個位置。"),
             (PUPPY_COLOR, "膚色方塊: 心碎小狗，玩家觸碰該角色後必須帶著小狗回到原點(心碎小狗的家)，否則無法過關。"),
             (MONSTER_COLOR, "粉色雙格方塊: 放閃情侶，玩家觸碰到該角色後有一段可以看見迷宮全知視野的時間。"),
@@ -888,13 +895,20 @@ while running:
         for color, desc in role_icons:
             # 畫方塊圖示
             pygame.draw.rect(screen, color, (60, y+2, 18, 18), border_radius=4)
-            # 文字自動換行
-            words = desc.split(' ')
+            # 文字自動換行，並在「心碎小狗的家」後加橘色方塊
+            if color == PUPPY_COLOR:
+                # 將『心碎小狗的家』替換為帶有標記的特殊字串
+                mark = "[HOME_ICON]"
+                desc_mod = desc.replace("心碎小狗的家)", "心碎小狗的家)" + mark)
+                words = desc_mod.split(' ')
+            else:
+                mark = None
+                words = desc.split(' ')
             line = ''
             lines = []
             for word in words:
                 test_line = line + ('' if line == '' else ' ') + word
-                if info_font.size(test_line)[0] > max_width:
+                if info_font.size(test_line.replace(mark or '', ''))[0] > max_width:
                     if line:
                         lines.append(line)
                     line = word
@@ -903,8 +917,25 @@ while running:
             if line:
                 lines.append(line)
             for i, l in enumerate(lines):
-                text = info_font.render(l, True, (0,26,51))
-                screen.blit(text, (85, y + i * (info_font_size + 2)))
+                # 若有標記，分割顯示
+                if color == PUPPY_COLOR and mark and mark in l:
+                    before, after = l.split(mark)
+                    text = info_font.render(before, True, (0,26,51))
+                    text_x = 85
+                    y_pos = y + i * (info_font_size + 2)
+                    screen.blit(text, (text_x, y_pos))
+                    # 畫橘色方塊
+                    icon_x = text_x + text.get_width() + 8
+                    icon_y = y_pos + 2
+                    pygame.draw.rect(screen, START_COLOR, (icon_x, icon_y, 18, 18), border_radius=4)
+                    # 若標記後還有文字，繼續顯示
+                    if after.strip():
+                        text2 = info_font.render(after, True, (0,26,51))
+                        screen.blit(text2, (icon_x + 18 + 8, y_pos))
+                else:
+                    text = info_font.render(l, True, (0,26,51))
+                    text_x = 85
+                    screen.blit(text, (text_x, y + i * (info_font_size + 2)))
             y += (info_font_size + 2) * len(lines) + 6
 
         y += 6
